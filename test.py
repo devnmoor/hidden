@@ -1,139 +1,243 @@
-import pygame
-import sys
-import os
-import random
+import pygame, sys, math, os
 
-# --- CONFIGURATION ---
-WIDTH, HEIGHT = 800, 1000 
-FPS = 60
-# 1.5 inches is roughly 144 pixels on standard screens
-MARGIN_1_5_INCH = 144  
+def duck_bathtub_game(sprite_path, max_shots=12):
+    W, H, FPS = 1000, 650, 60
 
-class MirrorRoom:
-    def __init__(self, screen):
-        self.screen = screen
-        self.done = False
-        self.game_cleared = False
-        
-        # --- DEVICE SETTINGS ---
-        self.device = "Computer"
-        self.brush_size = 25
-        
-        # --- LOAD & SCALE MIRROR ---
-        img_path = os.path.join('assets', 'mirror.png')
-        try:
-            original_img = pygame.image.load(img_path).convert_alpha()
-            w, h = original_img.get_size()
-            scale_factor = (HEIGHT * 0.85) / h
-            self.mirror_img = pygame.transform.scale(original_img, (int(w * scale_factor), int(HEIGHT * 0.85)))
-        except:
-            self.mirror_img = pygame.Surface((400, 850))
-            self.mirror_img.fill((180, 180, 180))
+    def clamp(v,a,b): return max(a, min(b, v))
+    def vlen(v): return math.hypot(v[0], v[1])
+    def vsub(a,b): return (a[0]-b[0], a[1]-b[1])
+    def vmul(v,k): return (v[0]*k, v[1]*k)
+    def vnorm(v):
+        L=vlen(v)
+        return (0,0) if L==0 else (v[0]/L, v[1]/L)
 
-        self.rect = self.mirror_img.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+    def circle_rect_hit(cx, cy, r, rect):
+        px = clamp(cx, rect.left, rect.right)
+        py = clamp(cy, rect.top, rect.bottom)
+        dx, dy = cx - px, cy - py
+        return (dx*dx + dy*dy) <= r*r, (px, py), (dx, dy)
 
-        # --- DIRT LAYER ---
-        self.dirt_layer = pygame.Surface(self.rect.size, pygame.SRCALPHA)
-        self.create_restricted_dirt()
+    class Duck:
+        def __init__(self, pos, r=22):
+            self.r = r
+            self.reset(pos)
 
-        # --- UI ELEMENTS ---
-        self.toggle_rect = pygame.Rect(20, 20, 160, 40)
+        def reset(self, pos):
+            self.pos = [float(pos[0]), float(pos[1])]
+            self.vel = [0.0, 0.0]
+            self.launched = False
+            self.sleep = 0
 
-    def create_restricted_dirt(self):
-        """Spawns dirt splotches with a strict 1.5-inch buffer."""
-        self.dirt_layer.fill((0, 0, 0, 0))
-        
-        # Calculate the internal "Safe Zone"
-        min_x = MARGIN_1_5_INCH
-        max_x = self.rect.width - MARGIN_1_5_INCH
-        min_y = MARGIN_1_5_INCH
-        max_y = self.rect.height - MARGIN_1_5_INCH
+        @property
+        def rect(self):
+            return pygame.Rect(int(self.pos[0]-self.r), int(self.pos[1]-self.r), self.r*2, self.r*2)
 
-        # Only spawn if the mirror is large enough to have an internal area
-        if max_x > min_x and max_y > min_y:
-            for _ in range(10):
-                x = random.randint(min_x, max_x)
-                y = random.randint(min_y, max_y)
-                size = random.randint(40, 70)
-                
-                # Dark, layered splotches
-                for r in range(size, 0, -4):
-                    alpha = 240 - (r * 3)
-                    if alpha < 0: alpha = 0
-                    pygame.draw.circle(self.dirt_layer, (35, 30, 25, alpha), (x, y), r)
+        def launch(self, vel):
+            self.vel[0], self.vel[1] = vel
+            self.launched = True
+            self.sleep = 0
 
-    def handle_input(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            if self.toggle_rect.collidepoint(event.pos):
-                self.device = "iPad" if self.device == "Computer" else "Computer"
-                self.brush_size = 50 if self.device == "iPad" else 25
+        def step(self, dt, gravity, solids, bounds):
+            # integrate
+            self.vel[1] += gravity * dt
+            self.pos[0] += self.vel[0] * dt
+            self.pos[1] += self.vel[1] * dt
 
-    def check_if_fully_clean(self):
-        """Strict check: Game only ends when pixel count is exactly zero."""
-        dirt_mask = pygame.mask.from_surface(self.dirt_layer)
-        if dirt_mask.count() == 0:
-            self.game_cleared = True
+            left, top, right, bottom = bounds
+            rest, fric = 0.50, 0.94
 
-    def update(self):
-        if self.game_cleared:
-            return
+            # screen bounds
+            if self.pos[0] < left + self.r:
+                self.pos[0] = left + self.r
+                self.vel[0] *= -rest
+                self.vel[1] *= fric
+            if self.pos[0] > right - self.r:
+                self.pos[0] = right - self.r
+                self.vel[0] *= -rest
+                self.vel[1] *= fric
+            if self.pos[1] < top + self.r:
+                self.pos[1] = top + self.r
+                self.vel[1] *= -rest
+                self.vel[0] *= fric
+            if self.pos[1] > bottom - self.r:
+                self.pos[1] = bottom - self.r
+                self.vel[1] *= -rest
+                self.vel[0] *= fric
 
-        if pygame.mouse.get_pressed()[0]:
-            mx, my = pygame.mouse.get_pos()
-            if self.rect.collidepoint(mx, my):
-                lx, ly = mx - self.rect.x, my - self.rect.y
-                
-                # Eraser logic
-                # We use a slightly higher alpha subtraction (150) for better responsiveness
-                brush = pygame.Surface((self.brush_size*2, self.brush_size*2), pygame.SRCALPHA)
-                pygame.draw.circle(brush, (0,0,0,150), (self.brush_size, self.brush_size), self.brush_size)
-                self.dirt_layer.blit(brush, (lx-self.brush_size, ly-self.brush_size), special_flags=pygame.BLEND_RGBA_SUB)
-                
-                self.check_if_fully_clean()
+            # tub collisions
+            for s in solids:
+                hit, closest, dxy = circle_rect_hit(self.pos[0], self.pos[1], self.r, s["rect"])
+                if not hit:
+                    continue
 
-    def draw(self):
-        # Background
-        self.screen.fill((15, 15, 20))
-        
-        # Mirror and Dirt
-        self.screen.blit(self.mirror_img, self.rect)
-        self.screen.blit(self.dirt_layer, self.rect)
+                dx, dy = dxy
+                if dx == 0 and s["rect"].left < self.pos[0] < s["rect"].right: dx = 1e-6
+                if dy == 0 and s["rect"].top < self.pos[1] < s["rect"].bottom: dy = 1e-6
 
-        # Device Toggle
-        pygame.draw.rect(self.screen, (45, 45, 50), self.toggle_rect, border_radius=10)
-        font = pygame.font.SysFont(None, 24)
-        mode_text = font.render(f"Mode: {self.device}", True, (255, 255, 255))
-        self.screen.blit(mode_text, (self.toggle_rect.x + 15, self.toggle_rect.y + 10))
+                rest = s.get("rest", 0.55)
+                fric = s.get("fric", 0.94)
 
-        # Win Message
-        if self.game_cleared:
-            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 180))
-            self.screen.blit(overlay, (0,0))
-            
-            big_font = pygame.font.SysFont(None, 120)
-            done_text = big_font.render("DONE!", True, (0, 255, 127))
-            text_rect = done_text.get_rect(center=(WIDTH//2, HEIGHT//2))
-            self.screen.blit(done_text, text_rect)
+                if abs(dx) > abs(dy):
+                    self.pos[0] = closest[0] - self.r if self.pos[0] < closest[0] else closest[0] + self.r
+                    self.vel[0] *= -rest
+                    self.vel[1] *= fric
+                else:
+                    self.pos[1] = closest[1] - self.r if self.pos[1] < closest[1] else closest[1] + self.r
+                    self.vel[1] *= -rest
+                    self.vel[0] *= fric
 
-def main():
+            # settle detection (reset after shot ends)
+            if abs(self.vel[0]) < 35 and abs(self.vel[1]) < 35:
+                self.sleep += 1
+            else:
+                self.sleep = 0
+
+        def update(self, dt, gravity, solids, bounds):
+            if not self.launched:
+                return
+            # Substeps = smoother motion + stable collisions
+            substeps = 3
+            step_dt = dt / substeps
+            for _ in range(substeps):
+                self.step(step_dt, gravity, solids, bounds)
+
+        def draw(self, surf):
+            x, y = int(self.pos[0]), int(self.pos[1])
+            pygame.draw.circle(surf, (255,210,70), (x,y), self.r)
+            pygame.draw.circle(surf, (255,230,120), (x-self.r//4,y-self.r//4), self.r//2)
+            pygame.draw.circle(surf, (245,155,70), (x+self.r-6,y+4), max(6,self.r//4))
+            pygame.draw.circle(surf, (70,80,95), (x-self.r//6,y-self.r//6), max(3,self.r//8))
+
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Fine Motor Skills: Room 1")
+    screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
-    room = MirrorRoom(screen)
+    font = pygame.font.SysFont("arial", 22)
+
+    # If you want to force local assets folder, uncomment:
+    # BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    # sprite_path = os.path.join(BASE_DIR, "assets", "bathtub.png")
+
+    tub_img = pygame.image.load(sprite_path).convert_alpha()
+    tub_img = pygame.transform.smoothscale(tub_img, (520, 340))
+    tub_rect = tub_img.get_rect(center=(W - 280, H//2 + 10))
+
+    # Static hitboxes (tuned for this sprite size)
+    rim = pygame.Rect(tub_rect.x + 70,  tub_rect.y + 82,  tub_rect.w - 140, 18)
+    left_wall = pygame.Rect(tub_rect.x + 70,  tub_rect.y + 90,  22, tub_rect.h - 130)
+    right_wall = pygame.Rect(tub_rect.right - 92, tub_rect.y + 90, 22, tub_rect.h - 130)
+    bottom_lip = pygame.Rect(tub_rect.x + 95,  tub_rect.bottom - 105, tub_rect.w - 190, 22)
+    solids = [
+        {"rect": rim, "rest": 0.62, "fric": 0.95},
+        {"rect": left_wall, "rest": 0.50, "fric": 0.92},
+        {"rect": right_wall, "rest": 0.50, "fric": 0.92},
+        {"rect": bottom_lip, "rest": 0.30, "fric": 0.90},
+    ]
+
+    # WATER SENSOR (touch = instant win)
+    water = pygame.Rect(tub_rect.x + 120, tub_rect.y + 130, tub_rect.w - 240, tub_rect.h - 210)
+
+    duck_start = (160, H - 140)
+    duck = Duck(duck_start, r=22)
+
+    # Smoother + slower
+    gravity = 1100.0     # was 1800
+    sling_max = 220      # was 260 (limits extreme shots)
+    power = 4.8          # was 7.0 (slower throw)
+
+    dragging = False
+    drag_start = (0,0)
+    drag_now = (0,0)
+
+    shots = 0
+    bounds = (0, 0, W, H)
+
+    preview_steps = 28
+    preview_dt = 0.07    # slightly slower preview for readability
+
+    won = False
 
     while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit(); sys.exit()
-            room.handle_input(event)
+        dt = clock.tick(FPS) / 1000.0
 
-        room.update()
-        room.draw()
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+
+            if e.type == pygame.KEYDOWN:
+                if e.key == pygame.K_ESCAPE:
+                    pygame.quit(); return won
+                if e.key == pygame.K_r:
+                    shots = 0
+                    won = False
+                    duck.reset(duck_start)
+
+            if won:
+                continue
+
+            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                if (not duck.launched) and duck.rect.collidepoint(e.pos) and shots < max_shots:
+                    dragging = True
+                    drag_start = e.pos
+                    drag_now = e.pos
+
+            if e.type == pygame.MOUSEMOTION and dragging:
+                drag_now = e.pos
+
+            if e.type == pygame.MOUSEBUTTONUP and e.button == 1 and dragging:
+                dragging = False
+                pull = vsub(drag_start, drag_now)  # pull back to shoot forward
+                L = vlen(pull)
+                if L > 10:
+                    if L > sling_max:
+                        pull = vmul(vnorm(pull), sling_max)
+                    duck.launch((pull[0]*power, pull[1]*power))
+                    shots += 1
+
+        if not won:
+            duck.update(dt, gravity, solids, bounds)
+
+            # INSTANT WIN: duck touches water region
+            if duck.launched and water.collidepoint(int(duck.pos[0]), int(duck.pos[1])):
+                won = True
+
+            # reset duck after it settles (if not won)
+            if duck.launched and duck.sleep > 30 and not won:
+                duck.reset(duck_start)
+
+        # draw
+        screen.fill((210, 235, 255))
+        screen.blit(tub_img, tub_rect)
+
+        # trajectory preview while dragging
+        if dragging and not won:
+            pull = vsub(drag_start, drag_now)
+            L = vlen(pull)
+            if L > 4:
+                if L > sling_max:
+                    pull = vmul(vnorm(pull), sling_max)
+                vx, vy = pull[0]*power, pull[1]*power
+                px, py = duck.pos[0], duck.pos[1]
+                pvx, pvy = vx, vy
+                for _ in range(preview_steps):
+                    pvy += gravity * preview_dt
+                    px += pvx * preview_dt
+                    py += pvy * preview_dt
+                    pygame.draw.circle(screen, (120,170,255), (int(px), int(py)), 4)
+
+        duck.draw(screen)
+
+        ui = font.render(f"Shots {shots}/{max_shots}", True, (40,55,80))
+        screen.blit(ui, (20, 18))
+
+        if won:
+            msg = font.render("WIN! Duck touched water.  (R) Restart  (ESC) Exit", True, (40,55,80))
+            screen.blit(msg, (20, 48))
+
         pygame.display.flip()
-        clock.tick(FPS)
 
 if __name__ == "__main__":
-    main()
-    
+    # IMPORTANT: use your real mac path or local relative path
+    # Example if bathtub.png is next to this file:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    sprite = os.path.join(BASE_DIR, "bathtub.png")
+    duck_bathtub_game(sprite, max_shots=12)
